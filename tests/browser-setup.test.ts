@@ -31,9 +31,11 @@ test('browser password envelope decrypts with the advertised public key', async 
 
 test('a one-use browser link completes password, SMS and gadget mint without exposing tokens', async t => {
   const calls: string[] = []
+  const csrfSent: [string, string | null][] = []
   const worker = await startWorker(async request => {
     const path = new URL(request.url).pathname
     calls.push(path)
+    csrfSent.push([path, request.headers.get('x-hatch-csrf-token')])
     const body = request.method === 'POST' ? await request.json() as Record<string, unknown> : {}
     if (path === '/api/auth/native/restart') return WorkerResponse.json({
       csrf_token: 'csrf', flow_state: 'started',
@@ -47,7 +49,7 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
     if (path === '/api/auth/native/confirm-password') {
       assert.match(String(body.password), /^#PWD_BROWSER:5:\d+:/)
       assert.doesNotMatch(String(body.password), /private-password/)
-      return WorkerResponse.json({ registration_state: 'two_factor_required', two_factor_required: true,
+      return WorkerResponse.json({ csrf_token: 'csrf2', registration_state: 'two_factor_required', two_factor_required: true,
         two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] })
     }
     if (path === '/api/auth/native/two-factor-send-code') {
@@ -125,6 +127,12 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
   assert.doesNotMatch(html, /private-password|user-session|device-refresh|verified-refresh/)
   assert.ok(calls.includes('/hatch/device_token/mint'))
   assert.ok(calls.includes('/hatch/login'))
+  // Muse rotates the CSRF token in the confirm-password response; later calls must send the new one.
+  assert.deepEqual(csrfSent.filter(([path]) => path.startsWith('/api/auth/native/two-factor')), [
+    ['/api/auth/native/two-factor-send-code', 'csrf2'],
+    ['/api/auth/native/two-factor-send-code', 'csrf2'],
+    ['/api/auth/native/two-factor', 'csrf2'],
+  ])
   assert.equal(((await admin.callTool({ name: 'get_setup_status' })).structuredContent as Record<string, unknown>).deviceConfigured, true)
   assert.equal(((await admin.callTool({ name: 'get_setup_status' })).structuredContent as Record<string, unknown>).ready, false)
 })

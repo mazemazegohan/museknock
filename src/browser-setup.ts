@@ -88,7 +88,10 @@ async function postWeb(session: BrowserSetupSession, path: string, body: Json, r
     const cookie = /^([^=;]+)=([^;]*)/.exec(header)
     if (cookie) (session.cookies ??= {})[cookie[1]] = cookie[2]
   }
-  return jsonResponse(response)
+  const data = await jsonResponse(response)
+  const rotated = string(data.csrf_token)
+  if (rotated) session.csrf = rotated
+  return data
 }
 
 function publicKeyBytes(value: string): Uint8Array {
