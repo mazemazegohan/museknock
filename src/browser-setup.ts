@@ -3,6 +3,7 @@ import nacl from 'tweetnacl-sealed-box'
 import { museDeviceSchema, type MuseDevice } from './muse-device.ts'
 
 const webBase = 'https://muse.ai'
+const csrfCookie = 'hatch_native_auth_csrf'
 const hatchBase = 'https://hatch-api.meta.ai'
 const gadgetAppId = 1503079994796347
 const timeoutMs = 15_000
@@ -60,13 +61,26 @@ async function jsonResponse(response: Response): Promise<Json> {
   return data
 }
 
-async function postHatch(path: string, body: Json, bearer: string, request: Request): Promise<Json> {
-  return jsonResponse(await request(hatchBase + path, {
+async function postHatch(session: BrowserSetupSession, path: string, body: Json, bearer: string,
+  request: Request): Promise<Json> {
+  const response = await request(hatchBase + path, {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
     headers: { Accept: 'application/json', 'Content-Type': 'application/json; charset=utf-8',
       'X-API-Version': '1.0.0', Authorization: 'Bearer ' + bearer },
     body: JSON.stringify(body),
-  }))
+  })
+  const debug = (bodyKeys: string, type?: string) => appendDebug(session,
+    `${path} status=${response.status} bodyKeys=${bodyKeys}` + (type ? ` type=${type}` : ''))
+  let data: Json
+  try {
+    data = await jsonResponse(response)
+  } catch (error) {
+    if (error instanceof AuthError) debug(debugNames(Object.keys(error.problem)), problemType(error.problem) ?? '-')
+    else debug('unreadable')
+    throw error
+  }
+  debug(debugNames(Object.keys(data)))
+  return data
 }
 
 async function postWeb(session: BrowserSetupSession, path: string, body: Json, request: Request): Promise<Json> {
@@ -93,14 +107,18 @@ async function postWeb(session: BrowserSetupSession, path: string, body: Json, r
     if (cookie) {
       (session.cookies ??= {})[cookie[1]] = cookie[2]
       setCookieNames.push(cookie[1].trim())
+      // Muse rotates the double-submit CSRF cookie (e.g. after two-factor); the header must follow it.
+      if (cookie[1].trim() === csrfCookie && cookie[2]) session.csrf = cookie[2]
     }
   }
-  const debug = (bodyKeys: string) => recordDebug(session, path, response, sentCsrf, bodyKeys, setCookieNames)
+  const debug = (bodyKeys: string, type?: string) =>
+    recordDebug(session, path, response, sentCsrf, bodyKeys, setCookieNames, type)
   let data: Json
   try {
     data = await jsonResponse(response)
   } catch (error) {
-    debug(error instanceof AuthError ? debugNames(Object.keys(error.problem)) : 'unreadable')
+    if (error instanceof AuthError) debug(debugNames(Object.keys(error.problem)), problemType(error.problem) ?? '-')
+    else debug('unreadable')
     throw error
   }
   debug(debugNames(Object.keys(data)))
@@ -114,13 +132,22 @@ const debugLimit = 10
 const debugName = (name: string) => /^[A-Za-z0-9_.-]{1,64}$/.test(name) ? name : '?'
 const debugNames = (names: string[]) => '[' + names.slice(0, 20).map(debugName).join(',') + ']'
 
-function recordDebug(session: BrowserSetupSession, path: string, response: Response, sentCsrf: boolean,
-  bodyKeys: string, setCookieNames: string[]) {
-  const csrfHeaders = [...response.headers.keys()].filter(name => name.toLowerCase().includes('csrf'))
-  const line = `${path} status=${response.status} sentCsrf=${sentCsrf ? 'yes' : 'no'} bodyKeys=${bodyKeys}` +
-    ` x-hatch-csrf-token=${response.headers.has('x-hatch-csrf-token') ? 'yes' : 'no'}` +
-    ` csrfHeaders=${debugNames(csrfHeaders)} setCookie=${debugNames(setCookieNames)}`
+function appendDebug(session: BrowserSetupSession, line: string) {
   session.debug = [...(session.debug ?? []), line].slice(-debugLimit)
+}
+
+function recordDebug(session: BrowserSetupSession, path: string, response: Response, sentCsrf: boolean,
+  bodyKeys: string, setCookieNames: string[], type?: string) {
+  const csrfHeaders = [...response.headers.keys()].filter(name => name.toLowerCase().includes('csrf'))
+  appendDebug(session, `${path} status=${response.status} sentCsrf=${sentCsrf ? 'yes' : 'no'} bodyKeys=${bodyKeys}` +
+    ` x-hatch-csrf-token=${response.headers.has('x-hatch-csrf-token') ? 'yes' : 'no'}` +
+    ` csrfHeaders=${debugNames(csrfHeaders)} setCookie=${debugNames(setCookieNames)}` + (type ? ` type=${type}` : ''))
+}
+
+// Problem `type` values are already shown to the user in the page banner, so they are safe to log.
+function problemType(problem: Json): string | undefined {
+  const type = string(problem.type)
+  return type && /^[A-Za-z0-9_./-]{1,100}$/.test(type) ? type : undefined
 }
 
 function publicKeyBytes(value: string): Uint8Array {
@@ -178,17 +205,24 @@ async function acceptCredentials(session: BrowserSetupSession, data: Json, sdkTo
     session.methods = methods
     session.selectedMethod = (methods.find(method => method.type.toUpperCase() === 'SMS') ?? methods[0]).id
     session.stage = 'two_factor'
-    if (methods.some(method => method.id === session.selectedMethod && method.type.toUpperCase() === 'SMS'))
-      await postWeb(session, '/api/auth/native/two-factor-send-code', { method_id: session.selectedMethod }, request)
+    if (methods.some(method => method.id === session.selectedMethod && method.type.toUpperCase() === 'SMS')) {
+      // Best-effort: the user can resend manually, so an upstream rejection must not abort the password step.
+      try {
+        await postWeb(session, '/api/auth/native/two-factor-send-code', { method_id: session.selectedMethod }, request)
+      } catch (error) {
+        if (!(error instanceof AuthError)) throw error
+        appendDebug(session, `auto two-factor-send-code ignored status=${error.status}`)
+      }
+    }
     return { session }
   }
   const meta = data.auth_meta_session ? object(data.auth_meta_session) : null
   const frl = meta && string(meta.frl_access_token)
   if (!frl) throw new Error('Muse login did not return a session')
-  const exchanged = await postHatch('/hatch/login', { frl_access_token: frl }, frl, request)
+  const exchanged = await postHatch(session, '/hatch/login', { frl_access_token: frl }, frl, request)
   const access = string(exchanged.access_token)
   if (!access || !string(exchanged.abra_user_id)) throw new Error('Muse did not return a Hatch session')
-  const minted = await postHatch('/hatch/device_token/mint', {
+  const minted = await postHatch(session, '/hatch/device_token/mint', {
     device_id: session.nodeId, sdk_token: sdkToken, abra_device_app_fbid: gadgetAppId,
   }, access, request)
   const payload = object(minted.payload ?? minted)
@@ -259,9 +293,8 @@ export async function advanceWebLogin(session: BrowserSetupSession, action: stri
 
 export function browserSetupError(error: unknown): BrowserSetupIssue {
   if (error instanceof AuthError) {
-    const type = string(error.problem.type)
-    return { kind: 'upstream', status: error.status,
-      ...(type && /^[A-Za-z0-9_./-]{1,100}$/.test(type) ? { type } : {}) }
+    const type = problemType(error.problem)
+    return { kind: 'upstream', status: error.status, ...(type ? { type } : {}) }
   }
   return error instanceof Error && error.message === 'Invalid login step'
     ? { kind: 'invalid_step' }

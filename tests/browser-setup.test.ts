@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { Response as WorkerResponse } from 'miniflare'
 import { blake2b } from 'blakejs'
 import nacl from 'tweetnacl-sealed-box'
-import { encryptWebPassword } from '../src/browser-setup.ts'
+import { advanceWebLogin, browserSetupError, encryptWebPassword, type BrowserSetupSession } from '../src/browser-setup.ts'
 import { connect } from './mcp-client.ts'
 import { startWorker } from './worker.ts'
 
@@ -54,7 +54,10 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
     }
     if (path === '/api/auth/native/two-factor-send-code') {
       assert.deepEqual(body, { method_id: 'sms' })
-      return WorkerResponse.json({})
+      // The first (automatic) send rotates the double-submit CSRF cookie without a body token.
+      const first = calls.filter(called => called === path).length === 1
+      return WorkerResponse.json({}, first
+        ? { headers: { 'Set-Cookie': 'hatch_native_auth_csrf=csrf3; Path=/; Secure; HttpOnly' } } : {})
     }
     if (path === '/api/auth/native/two-factor') {
       assert.equal(body.code, '123456')
@@ -130,17 +133,58 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
   assert.match(html, /\/api\/auth\/native\/restart status=201 sentCsrf=no/)
   assert.match(html, /\/api\/auth\/native\/confirm-password status=200 sentCsrf=yes bodyKeys=\[csrf_token,registration_state,two_factor_required,two_factor_methods\] x-hatch-csrf-token=no csrfHeaders=\[\] setCookie=\[mdebug\]/)
   assert.match(html, /\/api\/auth\/native\/two-factor status=200 sentCsrf=yes bodyKeys=\[auth_meta_session\]/)
-  assert.doesNotMatch(html, /secret-cookie-value|csrf2|123456|frl_access_token/)
+  assert.match(html, /\/hatch\/login status=200 bodyKeys=\[access_token,abra_user_id\]/)
+  assert.match(html, /\/hatch\/device_token\/mint status=200 bodyKeys=\[access_token,refresh_token\]/)
+  assert.doesNotMatch(html, /secret-cookie-value|csrf2|csrf3|123456|frl_access_token|device-access|device-refresh/)
   assert.ok(calls.includes('/hatch/device_token/mint'))
   assert.ok(calls.includes('/hatch/login'))
-  // Muse rotates the CSRF token in the confirm-password response; later calls must send the new one.
+  // Muse rotates the CSRF token in the confirm-password body, then via the hatch_native_auth_csrf cookie;
+  // every later call must send the newest value.
   assert.deepEqual(csrfSent.filter(([path]) => path.startsWith('/api/auth/native/two-factor')), [
     ['/api/auth/native/two-factor-send-code', 'csrf2'],
-    ['/api/auth/native/two-factor-send-code', 'csrf2'],
-    ['/api/auth/native/two-factor', 'csrf2'],
+    ['/api/auth/native/two-factor-send-code', 'csrf3'],
+    ['/api/auth/native/two-factor', 'csrf3'],
   ])
   assert.equal(((await admin.callTool({ name: 'get_setup_status' })).structuredContent as Record<string, unknown>).deviceConfigured, true)
   assert.equal(((await admin.callTool({ name: 'get_setup_status' })).structuredContent as Record<string, unknown>).ready, false)
+})
+
+test('a rejected automatic SMS send keeps the two-factor step and Hatch failures are logged by type', async () => {
+  const csrfSent: [string, string | null][] = []
+  const request = async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname
+    csrfSent.push([path, new Headers(init.headers).get('x-hatch-csrf-token')])
+    if (path === '/api/auth/native/confirm-password') return Response.json({ registration_state: 'two_factor_required',
+      two_factor_required: true, two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] })
+    if (path === '/api/auth/native/two-factor-send-code') return Response.json({ type: 'sendCodeFailed' }, { status: 400 })
+    if (path === '/api/auth/native/two-factor') return Response.json({ redirect_to: '/', auth_meta_session: { frl_access_token: 'frl' } },
+      { headers: { 'Set-Cookie': 'hatch_native_auth_csrf=fresh-csrf; Path=/' } })
+    if (path === '/hatch/login') return Response.json({ access_token: 'user-session', abra_user_id: 'user' })
+    if (path === '/hatch/device_token/mint') return Response.json({ type: 'mintRejected', detail: 'device-refresh' }, { status: 403 })
+    return new Response(null, { status: 404 })
+  }
+  const session: BrowserSetupSession = { expiresAt: Date.now() + 60_000, nodeId: 'homelink-abcdef', waterfallId: 'w',
+    csrf: 'csrf', keyId: 1, publicKey: 'A'.repeat(64), passwordAvailable: true, stage: 'password' }
+  const outcome = await advanceWebLogin(session, 'password', 'private-password', 'mgst_' + 'A'.repeat(43), request)
+  assert.equal(outcome.device, undefined)
+  assert.equal(session.stage, 'two_factor')
+  assert.equal(session.selectedMethod, 'sms')
+  assert.equal(session.error, undefined)
+  assert.match(session.debug!.join('\n'),
+    /\/api\/auth\/native\/two-factor-send-code status=400 sentCsrf=yes bodyKeys=\[type\] .* type=sendCodeFailed\nauto two-factor-send-code ignored status=400$/)
+  // The code step succeeds and rotates the CSRF cookie; the Hatch mint then fails and is visible in debug.
+  await assert.rejects(advanceWebLogin(session, 'two_factor', '123456', 'mgst_' + 'A'.repeat(43), request),
+    (error: unknown) => {
+      assert.deepEqual(browserSetupError(error), { kind: 'upstream', status: 403, type: 'mintRejected' })
+      return true
+    })
+  assert.equal(session.csrf, 'fresh-csrf')
+  const debug = session.debug!.join('\n')
+  assert.match(debug, /\/api\/auth\/native\/two-factor status=200 sentCsrf=yes bodyKeys=\[redirect_to,auth_meta_session\] .* setCookie=\[hatch_native_auth_csrf\]$/m)
+  assert.match(debug, /^\/hatch\/login status=200 bodyKeys=\[access_token,abra_user_id\]$/m)
+  assert.match(debug, /^\/hatch\/device_token\/mint status=403 bodyKeys=\[type,detail\] type=mintRejected$/m)
+  assert.doesNotMatch(debug, /fresh-csrf|123456|frl|user-session|device-refresh|private-password|mgst_/)
+  assert.deepEqual(csrfSent.map(([, csrf]) => csrf), ['csrf', 'csrf', 'csrf', null, null])
 })
 
 test('admin reset clears pairing without issuing a link', async t => {
