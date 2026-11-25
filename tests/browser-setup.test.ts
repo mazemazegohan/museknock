@@ -50,7 +50,7 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
       assert.match(String(body.password), /^#PWD_BROWSER:5:\d+:/)
       assert.doesNotMatch(String(body.password), /private-password/)
       return WorkerResponse.json({ csrf_token: 'csrf2', registration_state: 'two_factor_required', two_factor_required: true,
-        two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] })
+        two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] }, { headers: { 'Set-Cookie': 'mdebug=secret-cookie-value; Path=/' } })
     }
     if (path === '/api/auth/native/two-factor-send-code') {
       assert.deepEqual(body, { method_id: 'sms' })
@@ -125,6 +125,12 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
   assert.match(html, /完了|Complete/)
   assert.match(html, /通知先の自動登録/)
   assert.doesNotMatch(html, /private-password|user-session|device-refresh|verified-refresh/)
+  // Temporary debug block: names, statuses and flags only, never token, cookie or code values.
+  assert.match(html, /<pre class="debug"/)
+  assert.match(html, /\/api\/auth\/native\/restart status=201 sentCsrf=no/)
+  assert.match(html, /\/api\/auth\/native\/confirm-password status=200 sentCsrf=yes bodyKeys=\[csrf_token,registration_state,two_factor_required,two_factor_methods\] x-hatch-csrf-token=no csrfHeaders=\[\] setCookie=\[mdebug\]/)
+  assert.match(html, /\/api\/auth\/native\/two-factor status=200 sentCsrf=yes bodyKeys=\[auth_meta_session\]/)
+  assert.doesNotMatch(html, /secret-cookie-value|csrf2|123456|frl_access_token/)
   assert.ok(calls.includes('/hatch/device_token/mint'))
   assert.ok(calls.includes('/hatch/login'))
   // Muse rotates the CSRF token in the confirm-password response; later calls must send the new one.

@@ -26,6 +26,8 @@ export type BrowserSetupSession = {
   passwordAvailable?: boolean
   stage: 'contact' | 'otp' | 'password' | 'two_factor' | 'done' | 'error'
   error?: BrowserSetupIssue
+  // TEMPORARY debug capture for the csrfFailed investigation. Names, statuses and yes/no flags only.
+  debug?: string[]
 }
 
 export type BrowserSetupIssue =
@@ -68,6 +70,7 @@ async function postHatch(path: string, body: Json, bearer: string, request: Requ
 }
 
 async function postWeb(session: BrowserSetupSession, path: string, body: Json, request: Request): Promise<Json> {
+  const sentCsrf = !!session.csrf
   const response = await request(webBase + path, {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
     headers: {
@@ -84,14 +87,40 @@ async function postWeb(session: BrowserSetupSession, path: string, body: Json, r
     },
     body: JSON.stringify(body),
   })
+  const setCookieNames: string[] = []
   for (const header of response.headers.getSetCookie()) {
     const cookie = /^([^=;]+)=([^;]*)/.exec(header)
-    if (cookie) (session.cookies ??= {})[cookie[1]] = cookie[2]
+    if (cookie) {
+      (session.cookies ??= {})[cookie[1]] = cookie[2]
+      setCookieNames.push(cookie[1].trim())
+    }
   }
-  const data = await jsonResponse(response)
+  const debug = (bodyKeys: string) => recordDebug(session, path, response, sentCsrf, bodyKeys, setCookieNames)
+  let data: Json
+  try {
+    data = await jsonResponse(response)
+  } catch (error) {
+    debug(error instanceof AuthError ? debugNames(Object.keys(error.problem)) : 'unreadable')
+    throw error
+  }
+  debug(debugNames(Object.keys(data)))
   const rotated = string(data.csrf_token)
   if (rotated) session.csrf = rotated
   return data
+}
+
+// TEMPORARY debug capture (csrfFailed investigation). Never records values: only names, statuses and flags.
+const debugLimit = 10
+const debugName = (name: string) => /^[A-Za-z0-9_.-]{1,64}$/.test(name) ? name : '?'
+const debugNames = (names: string[]) => '[' + names.slice(0, 20).map(debugName).join(',') + ']'
+
+function recordDebug(session: BrowserSetupSession, path: string, response: Response, sentCsrf: boolean,
+  bodyKeys: string, setCookieNames: string[]) {
+  const csrfHeaders = [...response.headers.keys()].filter(name => name.toLowerCase().includes('csrf'))
+  const line = `${path} status=${response.status} sentCsrf=${sentCsrf ? 'yes' : 'no'} bodyKeys=${bodyKeys}` +
+    ` x-hatch-csrf-token=${response.headers.has('x-hatch-csrf-token') ? 'yes' : 'no'}` +
+    ` csrfHeaders=${debugNames(csrfHeaders)} setCookie=${debugNames(setCookieNames)}`
+  session.debug = [...(session.debug ?? []), line].slice(-debugLimit)
 }
 
 function publicKeyBytes(value: string): Uint8Array {
