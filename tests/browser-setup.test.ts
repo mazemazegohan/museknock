@@ -50,7 +50,7 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
       assert.match(String(body.password), /^#PWD_BROWSER:5:\d+:/)
       assert.doesNotMatch(String(body.password), /private-password/)
       return WorkerResponse.json({ csrf_token: 'csrf2', registration_state: 'two_factor_required', two_factor_required: true,
-        two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] }, { headers: { 'Set-Cookie': 'mdebug=secret-cookie-value; Path=/' } })
+        two_factor_methods: [{ method_id: 'sms', method_type: 'SMS' }] })
     }
     if (path === '/api/auth/native/two-factor-send-code') {
       assert.deepEqual(body, { method_id: 'sms' })
@@ -128,14 +128,6 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
   assert.match(html, /完了|Complete/)
   assert.match(html, /通知先の自動登録/)
   assert.doesNotMatch(html, /private-password|user-session|device-refresh|verified-refresh/)
-  // Temporary debug block: names, statuses and flags only, never token, cookie or code values.
-  assert.match(html, /<pre class="debug"/)
-  assert.match(html, /\/api\/auth\/native\/restart status=201 sentCsrf=no/)
-  assert.match(html, /\/api\/auth\/native\/confirm-password status=200 sentCsrf=yes bodyKeys=\[csrf_token,registration_state,two_factor_required,two_factor_methods\] x-hatch-csrf-token=no csrfHeaders=\[\] setCookie=\[mdebug\]/)
-  assert.match(html, /\/api\/auth\/native\/two-factor status=200 sentCsrf=yes bodyKeys=\[auth_meta_session\]/)
-  assert.match(html, /\/hatch\/login status=200 bodyKeys=\[access_token,abra_user_id\]/)
-  assert.match(html, /\/hatch\/device_token\/mint status=200 bodyKeys=\[access_token,refresh_token\]/)
-  assert.doesNotMatch(html, /secret-cookie-value|csrf2|csrf3|123456|frl_access_token|device-access|device-refresh/)
   assert.ok(calls.includes('/hatch/device_token/mint'))
   assert.ok(calls.includes('/hatch/login'))
   // Muse rotates the CSRF token in the confirm-password body, then via the hatch_native_auth_csrf cookie;
@@ -149,7 +141,7 @@ test('a one-use browser link completes password, SMS and gadget mint without exp
   assert.equal(((await admin.callTool({ name: 'get_setup_status' })).structuredContent as Record<string, unknown>).ready, false)
 })
 
-test('a rejected automatic SMS send keeps the two-factor step and Hatch failures are logged by type', async () => {
+test('a rejected automatic SMS send keeps the two-factor step and Hatch failures surface their type', async () => {
   const csrfSent: [string, string | null][] = []
   const request = async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname
@@ -170,20 +162,13 @@ test('a rejected automatic SMS send keeps the two-factor step and Hatch failures
   assert.equal(session.stage, 'two_factor')
   assert.equal(session.selectedMethod, 'sms')
   assert.equal(session.error, undefined)
-  assert.match(session.debug!.join('\n'),
-    /\/api\/auth\/native\/two-factor-send-code status=400 sentCsrf=yes bodyKeys=\[type\] .* type=sendCodeFailed\nauto two-factor-send-code ignored status=400$/)
-  // The code step succeeds and rotates the CSRF cookie; the Hatch mint then fails and is visible in debug.
+  // The code step succeeds and rotates the CSRF cookie; the Hatch mint then fails with its problem type.
   await assert.rejects(advanceWebLogin(session, 'two_factor', '123456', 'mgst_' + 'A'.repeat(43), request),
     (error: unknown) => {
       assert.deepEqual(browserSetupError(error), { kind: 'upstream', status: 403, type: 'mintRejected' })
       return true
     })
   assert.equal(session.csrf, 'fresh-csrf')
-  const debug = session.debug!.join('\n')
-  assert.match(debug, /\/api\/auth\/native\/two-factor status=200 sentCsrf=yes bodyKeys=\[redirect_to,auth_meta_session\] .* setCookie=\[hatch_native_auth_csrf\]$/m)
-  assert.match(debug, /^\/hatch\/login status=200 bodyKeys=\[access_token,abra_user_id\]$/m)
-  assert.match(debug, /^\/hatch\/device_token\/mint status=403 bodyKeys=\[type,detail\] type=mintRejected$/m)
-  assert.doesNotMatch(debug, /fresh-csrf|123456|frl|user-session|device-refresh|private-password|mgst_/)
   assert.deepEqual(csrfSent.map(([, csrf]) => csrf), ['csrf', 'csrf', 'csrf', null, null])
 })
 

@@ -1,7 +1,7 @@
 import type { BrowserSetupIssue, BrowserSetupSession } from './browser-setup.ts'
 
 export type BrowserSetupView = Pick<BrowserSetupSession,
-  'stage' | 'error' | 'notice' | 'passwordAvailable' | 'methods' | 'selectedMethod' | 'nodeId' | 'expiresAt' | 'debug'>
+  'stage' | 'error' | 'notice' | 'passwordAvailable' | 'methods' | 'selectedMethod' | 'nodeId' | 'expiresAt'>
 export type SetupLanguage = 'en' | 'ja' | 'zh-CN'
 
 const copy = {
@@ -128,7 +128,6 @@ const styles = `<style>
 h1{font-size:clamp(26px,5vw,32px);font-weight:500;line-height:1.2;letter-spacing:-.025em;margin:0 0 28px;color:#fff;text-align:center}p{line-height:1.6}
 form+form{margin-top:16px;padding-top:16px;border-top:1px solid #3a3a3d}label{display:block;font-size:13px;font-weight:500;margin:0 0 16px}input{display:block;width:100%;margin-top:8px;padding:12px 16px;min-height:48px;border:1px solid transparent;border-radius:16px;background:#38383a;color:#fff;font:inherit;font-size:16px}input:focus-visible,button:focus-visible,.langs a:focus-visible{outline:2px solid #7bb0ff;outline-offset:2px}button{width:100%;min-height:48px;border:0;border-radius:999px;background:#4b93ff;color:#fff;font:inherit;font-size:16px;font-weight:500;cursor:pointer}button:hover{background:#3584f3}form+form button{background:#39393c;color:#f7f7f7}form+form button:hover{background:#49494d}.hint{margin:0 0 18px;color:#b8b8bc;font-size:14px}.alert{padding:12px 14px;margin:0 0 20px;border-radius:12px;background:#46372c;color:#ffd6b0;font-size:13px}.result{padding:17px 18px;border-radius:14px;background:#293a4d;color:#e4efff;font-size:14px}.result p{margin:0}.result p+p{margin-top:7px}
 .meta{display:grid;gap:8px;border-top:1px solid #39393c;padding:19px 34px 23px;color:#a6a6ab;font-size:11px}.meta div{display:flex;justify-content:space-between;gap:12px}.meta code{overflow-wrap:anywhere;color:#d5d5d8;font-size:11px;text-align:right}.disclosure{margin:22px 12px 0;color:#a6a6ab;font-size:11px;text-align:center;line-height:1.65}
-.debug{margin:0 0 20px;padding:10px 12px;border-radius:10px;background:#1b1b1d;color:#c8c8cc;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:440px){.wrap{padding:20px 14px 28px}.top{margin-bottom:22px}.inner{padding:28px 22px 24px}.meta{padding:17px 22px 21px}.brand{font-size:16px}}
 </style>`
 
@@ -137,9 +136,6 @@ export function browserSetupPage(view: BrowserSetupView, initial = false, lang: 
   const title = view.stage === 'contact' ? t.contact : view.stage === 'done' ? t.done : t.verify
   const target = initial ? `?lang=${lang}` : `/v1/setup/browser?lang=${lang}`
   const error = view.error ? `<p class="alert" role="alert">${issueText(view.error, t)}</p>` : ''
-  // TEMPORARY debug block (csrfFailed investigation); contains names/statuses/flags only.
-  const debug = view.debug?.length
-    ? `<pre class="debug" aria-label="debug">${view.debug.map(line => escape(line)).join('\n')}</pre>` : ''
   let content = ''
   if (view.stage === 'contact') {
     content = `<form method="post" action="${target}"><label for="contact">${t.contactLabel}<input id="contact" name="contact" autocomplete="username" required maxlength="256"></label><label for="region">${t.regionLabel}<input id="region" name="region" value="JP" maxlength="2" pattern="[A-Za-z]{2}" autocapitalize="characters"></label><button type="submit">${t.contactButton}</button></form>`
@@ -158,7 +154,7 @@ export function browserSetupPage(view: BrowserSetupView, initial = false, lang: 
   const expires = new Date(view.expiresAt).toLocaleString(lang, { timeZone: 'Asia/Tokyo', dateStyle: 'medium', timeStyle: 'short' })
   const languageLinks = ([['en', 'English'], ['zh-CN', '中文'], ['ja', '日本語']] as const).map(([code, name]) =>
     `<a href="?lang=${code}" lang="${code}"${code === lang ? ' aria-current="page"' : ''}>${name}</a>`).join('')
-  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · MuseKnock</title>${styles}</head><body><div class="wrap"><header class="top"><div class="brand">MuseKnock</div><nav class="langs" aria-label="${t.languageLabel}">${languageLinks}</nav></header><main class="card"><div class="inner"><h1>${title}</h1>${error}${debug}${content}</div><div class="meta"><div><span>${t.device}</span><code>${escape(view.nodeId)}</code></div><div><span>${t.expires}</span><span>${escape(expires)} JST</span></div></div></main><p class="disclosure">${t.disclosureLead}<br>${t.disclosureDetail}</p></div></body></html>`
+  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · MuseKnock</title>${styles}</head><body><div class="wrap"><header class="top"><div class="brand">MuseKnock</div><nav class="langs" aria-label="${t.languageLabel}">${languageLinks}</nav></header><main class="card"><div class="inner"><h1>${title}</h1>${error}${content}</div><div class="meta"><div><span>${t.device}</span><code>${escape(view.nodeId)}</code></div><div><span>${t.expires}</span><span>${escape(expires)} JST</span></div></div></main><p class="disclosure">${t.disclosureLead}<br>${t.disclosureDetail}</p></div></body></html>`
 }
 
 export const browserSetupHeaders = {

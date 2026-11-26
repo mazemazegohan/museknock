@@ -48,12 +48,3 @@ test('setup translates stages, errors and notices without exposing markup', () =
   assert.ok(english.includes('Muse password'))
   assert.ok(english.includes('Continue with password'))
 })
-
-test('temporary debug block renders escaped lines near the error and is absent when empty', () => {
-  assert.doesNotMatch(browserSetupPage(view, true, 'ja'), /class="debug"/)
-  const html = browserSetupPage({ ...view, stage: 'two_factor', methods: [{ id: 'sms', type: 'SMS' }], selectedMethod: 'sms',
-    error: { kind: 'upstream', status: 403, type: 'csrfFailed' },
-    debug: ['/api/auth/native/two-factor status=403 sentCsrf=yes bodyKeys=[type] x-hatch-csrf-token=no csrfHeaders=[] setCookie=[]', '<b>'] }, false, 'ja')
-  assert.match(html, /role="alert">[^<]*csrfFailed[^<]*<\/p><pre class="debug" aria-label="debug">\/api\/auth\/native\/two-factor status=403 /)
-  assert.ok(html.includes('\n&lt;b&gt;</pre>'))
-})

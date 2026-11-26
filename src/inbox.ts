@@ -114,8 +114,8 @@ export class Inbox extends DurableObject<MuseBindings> {
   }
 
   private browserView(session: BrowserSetupSession): BrowserSetupView {
-    const { stage, error, notice, passwordAvailable, methods, selectedMethod, nodeId, expiresAt, debug } = session
-    return { stage, error, notice, passwordAvailable, methods, selectedMethod, nodeId, expiresAt, debug }
+    const { stage, error, notice, passwordAvailable, methods, selectedMethod, nodeId, expiresAt } = session
+    return { stage, error, notice, passwordAvailable, methods, selectedMethod, nodeId, expiresAt }
   }
 
   private async browserHash(value: string) {
